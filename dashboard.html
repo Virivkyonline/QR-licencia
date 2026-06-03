@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard | QR kódy Platinum</title>
+<meta name="theme-color" content="#0f172a"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="QR Platinum"/>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png"/>
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png"/>
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body class="theme-gold" data-protected="true">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand brand-sidebar" href="dashboard.html">
+        <span class="brand-mark">QP</span>
+        <span class="brand-text">
+          <strong>QR kódy Platinum</strong>
+          <small>Dashboard</small>
+        </span>
+      </a>
+
+      <nav class="side-nav">
+        <a class="active" href="dashboard.html">Prehľad</a>
+        <a href="companies.html">Firmy</a>
+        <a href="generator.html">Generátor QR</a>
+        <a href="license.html">Moja licencia</a>
+        <a href="admin.html">Admin</a>
+      </nav>
+
+      <button id="logoutBtn" class="btn btn-secondary full sidebar-logout">Odhlásiť sa</button>
+    </aside>
+
+    <main class="content">
+      <header class="content-topbar">
+        <div>
+          <h1>Dashboard</h1>
+          <p class="muted">Prehľad účtu a licencie.</p>
+        </div>
+
+        <div class="topbar-actions">
+          <div class="theme-switcher" aria-label="Výber farby">
+            <span class="theme-switcher-label">Motív</span>
+            <button type="button" class="theme-dot is-gold" data-theme="gold" title="Zlatá"></button>
+            <button type="button" class="theme-dot is-blue" data-theme="blue" title="Modrá"></button>
+            <button type="button" class="theme-dot is-green" data-theme="green" title="Zelená"></button>
+            <button type="button" class="theme-dot is-purple" data-theme="purple" title="Fialová"></button>
+          </div>
+          <div class="user-pill" id="userEmailPill">neprihlásený</div>
+        </div>
+      </header>
+
+      <section class="two-col">
+        <article class="panel-card">
+          <div class="panel-head">
+            <h2>Stav účtu</h2>
+          </div>
+
+          <div class="account-box">
+            <div class="account-row"><span>Email</span><strong id="accountEmail">—</strong></div>
+            <div class="account-row"><span>Rola</span><strong id="accountRole">user</strong></div>
+            <div class="account-row"><span>Status</span><strong id="accountStatus">pending</strong></div>
+            <div class="account-row"><span>Platba</span><strong id="licenseMiniStatus">čaká na úhradu</strong></div>
+            <div class="account-row"><span>Variabilný symbol</span><strong id="licenseMiniVs">—</strong></div>
+            <div class="account-row"><span>Suma</span><strong id="licenseMiniAmount">—</strong></div>
+          </div>
+        </article>
+
+        <article class="panel-card">
+          <div class="panel-head">
+            <h2>Moja licencia</h2>
+            <a href="license.html" class="text-link">Otvoriť detail</a>
+          </div>
+
+          <div class="payment-grid">
+            <div class="account-box compact">
+              <div class="account-row"><span>Stav</span><strong id="licenseStatusBadgeMirror">Platba čaká</strong></div>
+              <div class="account-row"><span>Variabilný symbol</span><strong id="licenseMiniVsMirror">—</strong></div>
+              <div class="form-actions"><button class="btn btn-secondary" type="button" id="copyVsBtn">Skopírovať VS</button></div>
+            </div>
+
+            <div class="qr-preview-box payment-qr-box">
+              <img id="dashboardLicenseQrImage" alt="QR na úhradu licencie"/>
+              <div id="dashboardLicenseQrPlaceholder" class="placeholder-copy">QR na úhradu sa zobrazí po načítaní platobných údajov.</div>
+            </div>
+          </div>
+
+          <div id="dashboardLicenseStatus" class="inline-status"></div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+<script src="pwa-register.js"></script></body>
+</html>

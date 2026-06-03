@@ -1,0 +1,10 @@
+{
+  "name": "qr-kody-platinum-pwa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QR kody Platinum ako staticka PWA webapka pre GitHub Pages a iPhone.",
+  "scripts": {
+    "start": "npx serve .",
+    "check": "node -e \"const fs=require('fs'); for (const f of ['app.js','pwa-register.js','service-worker.js']) new Function(fs.readFileSync(f,'utf8')); console.log('JS syntax OK')\""
+  }
+}

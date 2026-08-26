@@ -1,4 +1,4 @@
-const CACHE_NAME = "qr-platinum-pwa-v4";
+const CACHE_NAME = "qr-platinum-pwa-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -11,6 +11,9 @@ const APP_SHELL = [
   "./style.css",
   "./app.js",
   "./pwa-register.js",
+  "./style-v104.css",
+  "./app-v104.js",
+  "./pwa-register-v104.js",
   "./manifest.json",
   "./icon-180.png",
   "./icon-192.png",

@@ -110,6 +110,14 @@ function manualLicenseEnd(value) {
   return date.toISOString();
 }
 
+function manualLicenseEndFromParts(dateValue, timeValue) {
+  const datePart = String(dateValue || "").trim();
+  const timePart = String(timeValue || "").trim();
+  if (!datePart && !timePart) return null;
+  if (!datePart) throw new Error("Vyber deň, mesiac a rok platnosti licencie.");
+  return manualLicenseEnd(`${datePart}T${timePart || "23:59"}`);
+}
+
 function licenseStatusText(license = state.me.license) {
   if (license?.isValid) return `aktívna (${license.daysRemaining} dní)`;
   if (license?.status === "expired") return "platnosť vypršala";
@@ -886,10 +894,17 @@ async function bindAdmin() {
             </select>
           </label>
           <div class="license-validity-separator">alebo</div>
-          <label>
-            <span>Ručne nastaviť presný dátum a čas</span>
-            <input type="datetime-local" step="60" data-valid-until="${user.id}">
-          </label>
+          <div class="license-datetime-title">Ručne nastaviť konkrétny deň platnosti</div>
+          <div class="license-datetime-grid">
+            <label>
+              <span>Dátum platnosti (deň / mesiac / rok)</span>
+              <input type="date" data-valid-until-date="${user.id}">
+            </label>
+            <label>
+              <span>Čas platnosti (hodina / minúta)</span>
+              <input type="time" value="23:59" step="60" data-valid-until-time="${user.id}">
+            </label>
+          </div>
           <small>Ručný dátum má prednosť. Môže byť aj v minulosti na okamžitý test vypnutia.</small>
         </div>
       `;
@@ -929,7 +944,10 @@ async function bindAdmin() {
       try {
         const id = btn.dataset.saveLicense;
         const durationMonths = Number(list.querySelector(`[data-duration-months="${id}"]`)?.value || 0);
-        const validUntil = manualLicenseEnd(list.querySelector(`[data-valid-until="${id}"]`)?.value);
+        const validUntil = manualLicenseEndFromParts(
+          list.querySelector(`[data-valid-until-date="${id}"]`)?.value,
+          list.querySelector(`[data-valid-until-time="${id}"]`)?.value
+        );
         if (!validUntil && ![1, 12, 24].includes(durationMonths)) {
           throw new Error("Vyber obdobie alebo zadaj presný dátum a čas.");
         }
@@ -996,10 +1014,17 @@ async function bindAdmin() {
               </select>
             </label>
             <div class="license-validity-separator">alebo</div>
-            <label>
-              <span>Ručne nastaviť presný dátum a čas</span>
-              <input type="datetime-local" step="60" data-restore-valid-until="${user.id}">
-            </label>
+            <div class="license-datetime-title">Ručne nastaviť konkrétny deň platnosti</div>
+            <div class="license-datetime-grid">
+              <label>
+                <span>Dátum platnosti (deň / mesiac / rok)</span>
+                <input type="date" data-restore-valid-until-date="${user.id}">
+              </label>
+              <label>
+                <span>Čas platnosti (hodina / minúta)</span>
+                <input type="time" value="23:59" step="60" data-restore-valid-until-time="${user.id}">
+              </label>
+            </div>
           </div>
           <div class="item-actions">
             <button class="btn-small btn-activate" data-restore-license="${user.id}">Obnoviť a aktivovať</button>
@@ -1013,7 +1038,10 @@ async function bindAdmin() {
         try {
           const id = btn.dataset.restoreLicense;
           const durationMonths = Number(deletedList.querySelector(`[data-restore-duration-months="${id}"]`)?.value || 0);
-          const validUntil = manualLicenseEnd(deletedList.querySelector(`[data-restore-valid-until="${id}"]`)?.value);
+          const validUntil = manualLicenseEndFromParts(
+            deletedList.querySelector(`[data-restore-valid-until-date="${id}"]`)?.value,
+            deletedList.querySelector(`[data-restore-valid-until-time="${id}"]`)?.value
+          );
           if (!validUntil && ![1, 12, 24].includes(durationMonths)) {
             throw new Error("Vyber obdobie alebo zadaj presný dátum a čas.");
           }

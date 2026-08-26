@@ -878,6 +878,9 @@ async function bindAdmin() {
       const badgeClass = paymentStatus === "active" ? "active" : ["blocked", "expired"].includes(paymentStatus) ? "blocked" : paymentStatus === "paid" ? "paid" : "pending";
       const isAdmin = user.role === "admin";
       const validUntilLabel = isAdmin ? "trvalo (bez expirácie)" : formatDateTime(user.license.validUntil);
+      const blockAction = user.status === "blocked"
+        ? `<button class="btn-small btn-activate" data-unblock="${user.id}">Odblokovať</button>`
+        : `<button class="btn-small btn-delete" data-block="${user.id}">Blokovať</button>`;
       const licenseEditor = isAdmin ? `
         <div class="license-validity-editor">
           <span>Trvalý administrátorský prístup – nedá sa zablokovať ani vymazať.</span>
@@ -914,7 +917,7 @@ async function bindAdmin() {
           <button class="btn-small btn-paid" data-paid="${user.id}">Označiť uhradené</button>
           <button class="btn-small btn-activate" data-save-license="${user.id}">Uložiť a aktivovať</button>
           <button class="btn-small btn-delete" data-delete-license="${user.id}">Vymazať licenciu</button>
-          <button class="btn-small btn-delete" data-block="${user.id}">Blokovať</button>
+          ${blockAction}
           <button class="btn-small btn-reset" data-reset="${user.id}">Reset hesla</button>
       `;
 
@@ -971,6 +974,16 @@ async function bindAdmin() {
         await api(`/api/admin/users/${btn.dataset.block}/block`, { method: "POST" });
         await loadAdminUsers();
         setStatus(qs("adminStatus"), "Používateľ bol zablokovaný.", "ok");
+      } catch (err) {
+        setStatus(qs("adminStatus"), err.message, "err");
+      }
+    }));
+
+    list.querySelectorAll("[data-unblock]").forEach((btn) => btn.addEventListener("click", async () => {
+      try {
+        await api(`/api/admin/users/${btn.dataset.unblock}/unblock`, { method: "POST" });
+        await loadAdminUsers();
+        setStatus(qs("adminStatus"), "Používateľ bol odblokovaný. Platnosť licencie sa nezmenila.", "ok");
       } catch (err) {
         setStatus(qs("adminStatus"), err.message, "err");
       }

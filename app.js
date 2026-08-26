@@ -1,15 +1,6 @@
 const API_BASE = "https://qr-kody-platinum-api.virivkyonlinecz.workers.dev";
 const QR_API_BASE = "https://qr-generator-real.virivkyonlinecz.workers.dev";
-const REMEMBER_ADMIN_KEY = "qr_platinum_remember_admin";
-const DELETED_LICENSES_KEY = "qr_platinum_deleted_licenses";
-
-const LICENSE_PAYMENT = {
-  amount: 99,
-  iban: "SK3883300000002201671168",
-  bic: "FIOZSKBAXXX",
-  beneficiaryName: "Stavby1 s.r.o.",
-  paymentNote: "Licencia QR kódy Platinum"
-};
+const PRODUCT_CODE = "qr-platinum";
 
 const state = {
   me: {
@@ -19,10 +10,15 @@ const state = {
     status: "pending",
     license: {
       status: "pending",
-      licenseType: "one_time",
+      licenseType: "time_limited",
       activatedAt: "",
+      validFrom: "",
+      validUntil: "",
+      productCode: PRODUCT_CODE,
       variableSymbol: "",
-      paymentStatus: "waiting_payment"
+      paymentStatus: "waiting_payment",
+      isValid: false,
+      daysRemaining: 0
     }
   },
   companies: [],
@@ -52,53 +48,74 @@ function escapeHtml(value) {
   }[m]));
 }
 
-function loadRememberedAdminLogin() {
-  try {
-    return JSON.parse(localStorage.getItem(REMEMBER_ADMIN_KEY) || "null") || {};
-  } catch {
-    return {};
-  }
+function parseUtcDate(value) {
+  if (!value) return null;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(String(value))
+    ? `${value}T23:59:59.999Z`
+    : String(value);
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function prefillRememberedAdminLogin() {
-  const remembered = loadRememberedAdminLogin();
-  if (!remembered.email && !remembered.password) return;
-  if (qs("loginEmail") && !qs("loginEmail").value) qs("loginEmail").value = remembered.email || "";
-  if (qs("loginPassword") && !qs("loginPassword").value) qs("loginPassword").value = remembered.password || "";
-  if (qs("rememberAdminLogin")) qs("rememberAdminLogin").checked = true;
+function normalizeLicense(raw = {}) {
+  const status = String(raw.status || raw.license_status || "pending").toLowerCase();
+  const validUntil = raw.validUntil || raw.valid_until || raw.expiresAt || raw.expires_at || "";
+  const expiry = parseUtcDate(validUntil);
+  const isValid = status === "active" && !!expiry && expiry.getTime() > Date.now();
+  const daysRemaining = isValid
+    ? Math.max(1, Math.ceil((expiry.getTime() - Date.now()) / 86400000))
+    : 0;
+
+  return {
+    status: status === "active" && !isValid ? "expired" : status,
+    licenseType: raw.licenseType || raw.license_type || "time_limited",
+    activatedAt: raw.activatedAt || raw.activated_at || "",
+    validFrom: raw.validFrom || raw.valid_from || raw.activatedAt || raw.activated_at || "",
+    validUntil,
+    productCode: raw.productCode || raw.product_code || PRODUCT_CODE,
+    variableSymbol: raw.variableSymbol || raw.variable_symbol || "",
+    paymentStatus: raw.paymentStatus || raw.payment_status || (isValid ? "paid" : "waiting_payment"),
+    isValid,
+    daysRemaining
+  };
 }
 
-function saveRememberedAdminLogin(email, password, remember, role) {
-  if (!remember || role !== "admin") {
-    localStorage.removeItem(REMEMBER_ADMIN_KEY);
-    return;
-  }
-  localStorage.setItem(REMEMBER_ADMIN_KEY, JSON.stringify({ email, password }));
+function isLicenseActive(license = state.me.license) {
+  return !!license?.isValid;
 }
 
-function loadDeletedLicenseIds() {
-  try {
-    const ids = JSON.parse(localStorage.getItem(DELETED_LICENSES_KEY) || "[]");
-    return new Set(Array.isArray(ids) ? ids.map(String) : []);
-  } catch {
-    return new Set();
-  }
+function hasProductAccess() {
+  return state.me.role === "admin" || (
+    state.me.license.productCode === PRODUCT_CODE && isLicenseActive()
+  );
 }
 
-function saveDeletedLicenseIds(ids) {
-  localStorage.setItem(DELETED_LICENSES_KEY, JSON.stringify([...ids].map(String)));
+function formatDate(value) {
+  const date = parseUtcDate(value);
+  return date ? date.toLocaleDateString("sk-SK") : "—";
 }
 
-function rememberDeletedLicense(id) {
-  const ids = loadDeletedLicenseIds();
-  ids.add(String(id));
-  saveDeletedLicenseIds(ids);
+function formatDateTime(value) {
+  const date = parseUtcDate(value);
+  return date
+    ? date.toLocaleString("sk-SK", { dateStyle: "short", timeStyle: "short" })
+    : "—";
 }
 
-function forgetDeletedLicense(id) {
-  const ids = loadDeletedLicenseIds();
-  ids.delete(String(id));
-  saveDeletedLicenseIds(ids);
+function manualLicenseEnd(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) throw new Error("Zadaj platný dátum a čas licencie.");
+  return date.toISOString();
+}
+
+function licenseStatusText(license = state.me.license) {
+  if (license?.isValid) return `aktívna (${license.daysRemaining} dní)`;
+  if (license?.status === "expired") return "platnosť vypršala";
+  if (license?.status === "blocked") return "zablokovaná";
+  if (license?.status === "deleted") return "vymazaná";
+  return "čaká na aktiváciu";
 }
 
 async function api(path, options = {}) {
@@ -134,7 +151,10 @@ async function api(path, options = {}) {
     const message = typeof data === "string"
       ? data
       : data?.error || data?.message || data?.detail || "API chyba";
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = res.status;
+    error.code = typeof data === "object" ? data?.code || "" : "";
+    throw error;
   }
 
   return data;
@@ -142,12 +162,18 @@ async function api(path, options = {}) {
 
 
 async function qrApi(path, payload) {
+  const token = localStorage.getItem("token");
+  if (!token) throw new Error("Pre generovanie QR sa musíš prihlásiť.");
+
   let res;
   try {
     res = await fetch(QR_API_BASE + path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload || {})
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ ...(payload || {}), productCode: PRODUCT_CODE })
     });
   } catch {
     throw new Error("Nepodarilo sa spojiť s QR serverom.");
@@ -170,19 +196,13 @@ async function qrApi(path, payload) {
 
 function setCurrentUserFromApi(data) {
   const user = data?.user || {};
-  const license = data?.license || {};
+  const license = normalizeLicense(data?.license || user?.license || data?.entitlement || {});
   state.me = {
     id: user.id || "",
     email: user.email || "",
     role: user.role || "user",
     status: user.status || "pending",
-    license: {
-      status: license.status || "pending",
-      licenseType: license.licenseType || "one_time",
-      activatedAt: license.activatedAt || "",
-      variableSymbol: license.variableSymbol || "",
-      paymentStatus: license.paymentStatus || (license.status === "active" ? "paid" : "waiting_payment")
-    }
+    license
   };
 }
 
@@ -230,14 +250,10 @@ function bindAuth() {
   const registerForm = qs("registerForm");
   const forgotForm = qs("forgotPasswordForm");
   const resetForm = qs("resetPasswordForm");
-  prefillRememberedAdminLogin();
-
   loginForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = qs("loginEmail")?.value.trim() || "";
     const password = qs("loginPassword")?.value || "";
-    const rememberAdmin = !!qs("rememberAdminLogin")?.checked;
-
     try {
       const loginData = await api("/api/auth/login", {
         method: "POST",
@@ -249,7 +265,6 @@ function bindAuth() {
       }
 
       await loadMeFromApi();
-      saveRememberedAdminLogin(email, password, rememberAdmin, state.me.role);
 
       setStatus(qs("loginStatus"), "Prihlásenie prebehlo úspešne.", "ok");
       setTimeout(() => { location.href = "dashboard.html"; }, 300);
@@ -265,6 +280,7 @@ function bindAuth() {
     const password2 = qs("registerPassword2")?.value || "";
 
     try {
+      if (password.length < 8) throw new Error("Heslo musí mať aspoň 8 znakov.");
       if (password !== password2) throw new Error("Heslá sa nezhodujú.");
 
       const registerData = await api("/api/auth/register", {
@@ -291,6 +307,7 @@ function bindAuth() {
       const payment = await api("/api/license/payment-qr", {
         method: "POST",
         body: JSON.stringify({
+          productCode: PRODUCT_CODE,
           variableSymbol: loginData?.license?.variableSymbol || registerData?.license?.variableSymbol || ""
         })
       });
@@ -305,8 +322,13 @@ function bindAuth() {
 
       const img = qs("postRegisterQrImage");
       const placeholder = qs("postRegisterQrPlaceholder");
-      if (img && payment?.imageBase64) {
-        img.src = `data:image/png;base64,${payment.imageBase64}`;
+      const registrationQr = payment?.imageBase64
+        ? `data:image/png;base64,${payment.imageBase64}`
+        : payment?.svg
+          ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(payment.svg)}`
+          : "";
+      if (img && registrationQr) {
+        img.src = registrationQr;
         img.style.display = "block";
         if (placeholder) placeholder.style.display = "none";
       }
@@ -341,6 +363,7 @@ function bindAuth() {
 
     try {
       if (!token) throw new Error("Chýba reset token.");
+      if (password.length < 8) throw new Error("Heslo musí mať aspoň 8 znakov.");
       if (password !== password2) throw new Error("Heslá sa nezhodujú.");
 
       await api("/api/auth/reset-password", {
@@ -377,14 +400,29 @@ function populateDashboard() {
 
   const badge = qs("licenseStatusBadge");
   if (badge) {
-    badge.textContent = state.me.license.status || "pending";
+    badge.textContent = licenseStatusText();
     badge.className = "status-badge " + (
-      state.me.license.status === "active"
+      state.me.license.isValid
         ? "active"
-        : state.me.license.status === "blocked"
+        : ["blocked", "expired", "deleted"].includes(state.me.license.status)
           ? "blocked"
           : "pending"
     );
+  }
+
+  if (qs("licenseValidUntil")) qs("licenseValidUntil").textContent = formatDate(state.me.license.validUntil);
+  if (qs("licenseDaysRemaining")) qs("licenseDaysRemaining").textContent = String(state.me.license.daysRemaining || 0);
+
+  const licenseBox = qs("licenseStatusBadgeMirror")?.closest(".account-box");
+  if (licenseBox && !qs("dashboardLicenseValidity")) {
+    const row = document.createElement("div");
+    row.id = "dashboardLicenseValidity";
+    row.className = "account-row";
+    row.innerHTML = '<span>Platná do</span><strong id="dashboardLicenseValidUntil">—</strong>';
+    licenseBox.insertBefore(row, licenseBox.querySelector(".form-actions"));
+  }
+  if (qs("dashboardLicenseValidUntil")) {
+    qs("dashboardLicenseValidUntil").textContent = formatDate(state.me.license.validUntil);
   }
 
   if (qs("companiesCount")) qs("companiesCount").textContent = String(state.companies.length);
@@ -495,6 +533,12 @@ function bindCompanies() {
   const form = qs("companyForm");
   if (!form) return;
 
+  if (!hasProductAccess()) {
+    form.querySelectorAll("input, select, textarea, button").forEach((el) => { el.disabled = true; });
+    setStatus(qs("companyStatus"), "Správa firiem je zablokovaná, pretože licencia nie je platná.", "err");
+    return;
+  }
+
   loadCompanies().catch((err) => setStatus(qs("companyStatus"), err.message, "err"));
 
   qs("resetCompanyForm")?.addEventListener("click", resetCompanyForm);
@@ -549,7 +593,13 @@ function bindGenerator() {
   const form = qs("generatorForm");
   if (!form) return;
 
-  loadCompanies().catch(() => {});
+  if (!hasProductAccess()) {
+    form.querySelectorAll("input, select, textarea, button").forEach((el) => { el.disabled = true; });
+    setStatus(qs("generatorStatus"), "Generovanie je zablokované, pretože licencia nie je platná.", "err");
+    return;
+  }
+
+  loadCompanies().catch((err) => setStatus(qs("generatorStatus"), err.message, "err"));
 
  const due = qs("genDueDate");
 if (due && !due.value) {
@@ -560,8 +610,8 @@ if (due && !due.value) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
 
-    if (state.me.license.status !== "active") {
-      return setStatus(qs("generatorStatus"), "Generovanie je zamknuté, kým nie je licencia aktívna.", "err");
+    if (!hasProductAccess()) {
+      return setStatus(qs("generatorStatus"), "Generovanie je zamknuté, pretože licencia nie je platná.", "err");
     }
 
     const company = state.companies.find((c) => c.id === qs("genCompany")?.value);
@@ -585,7 +635,7 @@ if (due && !due.value) {
 
       const img = qs("qrPreviewImage");
       if (img && data?.svg) {
-  img.src = "data:image/svg+xml;base64," + btoa(data.svg);
+  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(data.svg)}`;
   img.style.display = "block";
   if (qs("qrPreviewPlaceholder")) qs("qrPreviewPlaceholder").style.display = "none";
 }
@@ -608,40 +658,71 @@ if (due && !due.value) {
 async function bindLicense() {
   if (!qs("licensePageStatus") && !qs("dashboardLicenseQrImage")) return;
 
+  let licenseData = {};
+  let paymentData = {};
   try {
-    const data = await api("/api/license/me", { method: "GET" });
-    state.me.license = {
-      status: data.license?.status || "pending",
-      licenseType: data.license?.licenseType || "one_time",
-      activatedAt: data.license?.activatedAt || "",
-      variableSymbol: data.license?.variableSymbol || state.me.license.variableSymbol || "",
-      paymentStatus: data.license?.status === "active" ? "paid" : "waiting_payment"
-    };
+    licenseData = await api(`/api/license/me?product=${encodeURIComponent(PRODUCT_CODE)}`, { method: "GET" });
+    state.me.license = normalizeLicense({
+      ...(licenseData.license || licenseData.entitlement || {}),
+      variableSymbol: licenseData.license?.variableSymbol || licenseData.license?.variable_symbol || licenseData.entitlement?.variableSymbol || state.me.license.variableSymbol
+    });
   } catch (err) {
     setStatus(qs("licenseStatusMessage") || qs("dashboardLicenseStatus"), err.message, "err");
     return;
   }
 
-  const status = state.me.license.status || "pending";
-  const isPaid = status === "active";
+  try {
+    paymentData = await api("/api/license/payment-qr", {
+      method: "POST",
+      body: JSON.stringify({
+        productCode: PRODUCT_CODE,
+        variableSymbol: state.me.license.variableSymbol || ""
+      })
+    });
+  } catch (err) {
+    setStatus(qs("licenseStatusMessage") || qs("dashboardLicenseStatus"), err.message, "err");
+  }
+
+  const status = state.me.license.status;
+  const isPaid = state.me.license.paymentStatus === "paid" || state.me.license.isValid;
+  const sourcePayment = paymentData.payment || licenseData.payment || {};
   const payment = {
-    amount: LICENSE_PAYMENT.amount,
-    iban: LICENSE_PAYMENT.iban,
-    bic: LICENSE_PAYMENT.bic,
-    beneficiaryName: LICENSE_PAYMENT.beneficiaryName,
-    paymentNote: LICENSE_PAYMENT.paymentNote,
-    variableSymbol: state.me.license.variableSymbol || "—"
+    amount: Number(sourcePayment.amount || 0),
+    iban: sourcePayment.iban || "—",
+    bic: sourcePayment.bic || "",
+    beneficiaryName: sourcePayment.beneficiaryName || sourcePayment.beneficiary_name || "—",
+    paymentNote: sourcePayment.paymentNote || sourcePayment.payment_note || "—",
+    variableSymbol: sourcePayment.variableSymbol || sourcePayment.variable_symbol || state.me.license.variableSymbol || "—"
   };
 
   const badge = qs("licensePageStatus");
   if (badge) {
-    badge.textContent = status;
-    badge.className = "status-badge " + (status === "active" ? "active" : status === "blocked" ? "blocked" : "pending");
+    badge.textContent = licenseStatusText();
+    badge.className = "status-badge " + (state.me.license.isValid ? "active" : ["blocked", "expired", "deleted"].includes(status) ? "blocked" : "pending");
   }
-  if (qs("licenseType")) qs("licenseType").textContent = state.me.license.licenseType || "one_time";
-  if (qs("licenseActivatedAt")) qs("licenseActivatedAt").textContent = state.me.license.activatedAt || "—";
+  if (qs("licenseType")) qs("licenseType").textContent = state.me.license.licenseType || "time_limited";
+  if (qs("licenseActivatedAt")) qs("licenseActivatedAt").textContent = formatDate(state.me.license.activatedAt);
 
-  if (qs("licensePaymentState")) qs("licensePaymentState").textContent = isPaid ? "uhradené" : "čaká na úhradu";
+  const activatedCard = qs("licenseActivatedAt")?.closest("article");
+  if (activatedCard && !qs("licenseValiditySummary")) {
+    const validity = document.createElement("p");
+    validity.id = "licenseValiditySummary";
+    validity.className = "muted";
+    activatedCard.appendChild(validity);
+  }
+  if (qs("licenseValiditySummary")) {
+    qs("licenseValiditySummary").textContent = `Platná do: ${formatDate(state.me.license.validUntil)} · zostáva ${state.me.license.daysRemaining} dní`;
+  }
+
+  if (qs("licensePaymentState")) {
+    qs("licensePaymentState").textContent = state.me.license.isValid
+      ? "uhradené a aktívne"
+      : status === "expired"
+        ? "uhradené, platnosť vypršala"
+        : isPaid
+          ? "uhradené, čaká na aktiváciu"
+          : "čaká na úhradu";
+  }
   if (qs("licenseVariableSymbol")) qs("licenseVariableSymbol").textContent = payment.variableSymbol;
   if (qs("licenseAmount")) qs("licenseAmount").textContent = money(payment.amount);
   if (qs("licenseIban")) qs("licenseIban").textContent = payment.iban;
@@ -649,37 +730,29 @@ async function bindLicense() {
   if (qs("licenseBeneficiary")) qs("licenseBeneficiary").textContent = payment.beneficiaryName;
   if (qs("licensePaymentNote")) qs("licensePaymentNote").textContent = payment.paymentNote;
 
-  if (qs("licenseMiniStatus")) qs("licenseMiniStatus").textContent = isPaid ? "uhradené" : "čaká na úhradu";
+  if (qs("licenseMiniStatus")) qs("licenseMiniStatus").textContent = licenseStatusText();
   if (qs("licenseMiniVs")) qs("licenseMiniVs").textContent = payment.variableSymbol;
   if (qs("licenseMiniAmount")) qs("licenseMiniAmount").textContent = money(payment.amount);
-  if (qs("licenseStatusBadgeMirror")) qs("licenseStatusBadgeMirror").textContent = status;
+  if (qs("licenseStatusBadgeMirror")) qs("licenseStatusBadgeMirror").textContent = licenseStatusText();
   if (qs("licenseMiniVsMirror")) qs("licenseMiniVsMirror").textContent = payment.variableSymbol;
 
-  try {
-    const qrData = await qrApi("/", {
-      amount: payment.amount,
-      iban: payment.iban,
-      beneficiaryName: payment.beneficiaryName,
-      variableSymbol: state.me.license.variableSymbol || "",
-      paymentNote: payment.paymentNote,
-      bic: payment.bic || ""
-    });
+  const qrSource = paymentData.imageBase64
+    ? `data:image/png;base64,${paymentData.imageBase64}`
+    : paymentData.svg
+      ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(paymentData.svg)}`
+      : "";
+  const setQr = (imgId, placeholderId) => {
+    const img = qs(imgId);
+    const placeholder = qs(placeholderId);
+    if (img && qrSource) {
+      img.src = qrSource;
+      img.style.display = "block";
+      if (placeholder) placeholder.style.display = "none";
+    }
+  };
 
-    const setQr = (imgId, placeholderId) => {
-      const img = qs(imgId);
-      const placeholder = qs(placeholderId);
-      if (img && qrData?.svg) {
-        img.src = "data:image/svg+xml;base64," + btoa(qrData.svg);
-        img.style.display = "block";
-        if (placeholder) placeholder.style.display = "none";
-      }
-    };
-
-    setQr("licenseQrImage", "licenseQrPlaceholder");
-    setQr("dashboardLicenseQrImage", "dashboardLicenseQrPlaceholder");
-  } catch (err) {
-    setStatus(qs("licenseStatusMessage") || qs("dashboardLicenseStatus"), err.message, "err");
-  }
+  setQr("licenseQrImage", "licenseQrPlaceholder");
+  setQr("dashboardLicenseQrImage", "dashboardLicenseQrPlaceholder");
 
   qs("copyLicenseVsBtn")?.addEventListener("click", async () => {
     try {
@@ -707,6 +780,7 @@ async function bindLicense() {
     const newPassword2 = qs("newPassword2")?.value || "";
 
     try {
+      if (newPassword.length < 8) throw new Error("Nové heslo musí mať aspoň 8 znakov.");
       if (newPassword !== newPassword2) throw new Error("Nové heslá sa nezhodujú.");
 
       await api("/api/auth/change-password", {
@@ -726,6 +800,14 @@ async function bindAdmin() {
   const list = qs("adminUsersList");
   if (!list) return;
   const deletedList = qs("adminDeletedLicensesList");
+  const currentAdminProductCode = () => qs("adminProductCode")?.value || PRODUCT_CODE;
+  const adminFilters = qs("adminFilterEmail")?.closest(".admin-filters");
+  if (adminFilters && !qs("adminProductCode")) {
+    const productLabel = document.createElement("label");
+    productLabel.className = "full-span";
+    productLabel.innerHTML = '<span>Produkt licencie</span><select id="adminProductCode"><option value="qr-platinum">QR Platinum</option><option value="lech-play-tv">Lech Play TV</option></select>';
+    adminFilters.prepend(productLabel);
+  }
 
   async function getBillingConfigAdmin() {
     const data = await api("/api/admin/billing-company", { method: "GET" });
@@ -761,11 +843,13 @@ async function bindAdmin() {
     const deletedUsers = state.adminUsers.filter((user) => user.licenseDeleted);
 
     const filtered = visibleUsers.filter((user) => {
-      const paymentStatus = user.licenseStatus === "active"
-        ? "active"
-        : user.status === "blocked"
-          ? "blocked"
-          : (user.paymentStatus === "paid" ? "paid" : "pending");
+      const paymentStatus = user.status === "blocked"
+        ? "blocked"
+        : user.license.status === "expired"
+          ? "expired"
+          : user.license.isValid
+            ? "active"
+            : (user.license.paymentStatus === "paid" ? "paid" : "pending");
 
       const okEmail = !emailFilter || user.email.toLowerCase().includes(emailFilter);
       const okVs = !vsFilter || String(user.variableSymbol || "").includes(vsFilter);
@@ -774,13 +858,50 @@ async function bindAdmin() {
       return okEmail && okVs && okStatus;
     });
 
-    list.innerHTML = filtered.length ? "" : '<div class="table-note">Zatia? nie s? akt?vne ani ?akaj?ce licencie.</div>';
+    list.innerHTML = filtered.length ? "" : '<div class="table-note">Zatiaľ nie sú aktívne ani čakajúce licencie.</div>';
     filtered.forEach((user) => {
-      const paymentStatus = user.licenseStatus === "active"
-        ? "active"
-        : user.status === "blocked"
-          ? "blocked"
-          : (user.paymentStatus === "paid" ? "paid" : "pending");
+      const paymentStatus = user.status === "blocked"
+        ? "blocked"
+        : user.license.status === "expired"
+          ? "expired"
+          : user.license.isValid
+            ? "active"
+            : (user.license.paymentStatus === "paid" ? "paid" : "pending");
+      const badgeClass = paymentStatus === "active" ? "active" : ["blocked", "expired"].includes(paymentStatus) ? "blocked" : paymentStatus === "paid" ? "paid" : "pending";
+      const isAdmin = user.role === "admin";
+      const validUntilLabel = isAdmin ? "trvalo (bez expirácie)" : formatDateTime(user.license.validUntil);
+      const licenseEditor = isAdmin ? `
+        <div class="license-validity-editor">
+          <span>Trvalý administrátorský prístup – nedá sa zablokovať ani vymazať.</span>
+        </div>
+      ` : `
+        <div class="license-validity-editor">
+          <label>
+            <span>Predĺžiť alebo aktivovať na obdobie</span>
+            <select data-duration-months="${user.id}">
+              <option value="">Vyber platnosť</option>
+              <option value="1">1 mesiac</option>
+              <option value="12">1 rok</option>
+              <option value="24">2 roky</option>
+            </select>
+          </label>
+          <div class="license-validity-separator">alebo</div>
+          <label>
+            <span>Ručne nastaviť presný dátum a čas</span>
+            <input type="datetime-local" step="60" data-valid-until="${user.id}">
+          </label>
+          <small>Ručný dátum má prednosť. Môže byť aj v minulosti na okamžitý test vypnutia.</small>
+        </div>
+      `;
+      const licenseActions = isAdmin ? `
+          <button class="btn-small btn-reset" data-reset="${user.id}">Reset hesla</button>
+      ` : `
+          <button class="btn-small btn-paid" data-paid="${user.id}">Označiť uhradené</button>
+          <button class="btn-small btn-activate" data-save-license="${user.id}">Uložiť a aktivovať</button>
+          <button class="btn-small btn-delete" data-delete-license="${user.id}">Vymazať licenciu</button>
+          <button class="btn-small btn-delete" data-block="${user.id}">Blokovať</button>
+          <button class="btn-small btn-reset" data-reset="${user.id}">Reset hesla</button>
+      `;
 
       const item = document.createElement("article");
       item.className = "admin-item";
@@ -791,26 +912,37 @@ async function bindAdmin() {
             <div class="muted">rola: ${escapeHtml(user.role)}</div>
             <div class="muted">status: ${escapeHtml(user.status)}</div>
             <div class="muted">VS: ${escapeHtml(user.variableSymbol || "—")}</div>
+            <div class="muted">produkt: ${escapeHtml(user.license.productCode)}</div>
+            <div class="muted">platná do: ${escapeHtml(validUntilLabel)}</div>
           </div>
-          <span class="status-badge ${paymentStatus === "active" ? "active" : paymentStatus === "blocked" ? "blocked" : paymentStatus === "paid" ? "paid" : "pending"}">${paymentStatus === "paid" ? "uhradené" : paymentStatus}</span>
+          <span class="status-badge ${badgeClass}">${paymentStatus === "paid" ? "uhradené" : paymentStatus === "expired" ? "vypršala" : paymentStatus}</span>
         </div>
+        ${licenseEditor}
         <div class="item-actions">
-          <button class="btn-small btn-paid" data-paid="${user.id}">Označiť uhradené</button>
-          <button class="btn-small btn-activate" data-activate="${user.id}">Aktivovať</button>
-          <button class="btn-small btn-delete" data-delete-license="${user.id}">Vymazať licenciu</button>
-          <button class="btn-small btn-delete" data-block="${user.id}">Blokovať</button>
-          <button class="btn-small btn-reset" data-reset="${user.id}">Reset hesla</button>
+          ${licenseActions}
         </div>
       `;
       list.appendChild(item);
     });
 
-    list.querySelectorAll("[data-activate]").forEach((btn) => btn.addEventListener("click", async () => {
+    list.querySelectorAll("[data-save-license]").forEach((btn) => btn.addEventListener("click", async () => {
       try {
-        forgetDeletedLicense(btn.dataset.activate);
-        await api(`/api/admin/users/${btn.dataset.activate}/activate`, { method: "POST" });
+        const id = btn.dataset.saveLicense;
+        const durationMonths = Number(list.querySelector(`[data-duration-months="${id}"]`)?.value || 0);
+        const validUntil = manualLicenseEnd(list.querySelector(`[data-valid-until="${id}"]`)?.value);
+        if (!validUntil && ![1, 12, 24].includes(durationMonths)) {
+          throw new Error("Vyber obdobie alebo zadaj presný dátum a čas.");
+        }
+        await api(`/api/admin/users/${id}/license`, {
+          method: "PUT",
+          body: JSON.stringify({
+            status: "active",
+            productCode: currentAdminProductCode(),
+            ...(validUntil ? { validUntil } : { durationMonths })
+          })
+        });
         await loadAdminUsers();
-        setStatus(qs("adminStatus"), "Používateľ bol aktivovaný.", "ok");
+        setStatus(qs("adminStatus"), "Licencia bola aktivovaná do zadaného dátumu.", "ok");
       } catch (err) {
         setStatus(qs("adminStatus"), err.message, "err");
       }
@@ -831,16 +963,7 @@ async function bindAdmin() {
         const user = state.adminUsers.find((x) => String(x.id) === String(btn.dataset.deleteLicense));
         const label = user?.email ? ` pre ${user.email}` : "";
         if (!confirm(`Naozaj vymazať licenciu${label}? Používateľ zostane v systéme, ale licencia sa odstráni.`)) return;
-        try {
-          await api(`/api/admin/users/${btn.dataset.deleteLicense}/block`, { method: "POST" });
-        } catch {}
-        try {
-          await api(`/api/admin/users/${btn.dataset.deleteLicense}/license`, { method: "DELETE" });
-        } catch {
-          try {
-            await api(`/api/admin/users/${btn.dataset.deleteLicense}/delete-license`, { method: "POST" });
-          } catch {}
-        }
+        await api(`/api/admin/users/${btn.dataset.deleteLicense}/license?product=${encodeURIComponent(currentAdminProductCode())}`, { method: "DELETE" });
         await loadAdminUsers();
         setStatus(qs("adminStatus"), "Licencia bola vymazaná.", "ok");
       } catch (err) {
@@ -849,7 +972,7 @@ async function bindAdmin() {
     }));
 
     if (deletedList) {
-      deletedList.innerHTML = deletedUsers.length ? "" : '<div class="table-note">Zatial nie su vymazane licencie.</div>';
+      deletedList.innerHTML = deletedUsers.length ? "" : '<div class="table-note">Zatiaľ nie sú vymazané licencie.</div>';
       deletedUsers.forEach((user) => {
         const item = document.createElement("article");
         item.className = "admin-item";
@@ -857,13 +980,30 @@ async function bindAdmin() {
           <div class="admin-top">
             <div>
               <strong>${escapeHtml(user.email)}</strong>
-              <div class="muted">status: vymazan? licencia</div>
-              <div class="muted">VS: ${escapeHtml(user.variableSymbol || "?")}</div>
+              <div class="muted">status: vymazaná licencia</div>
+              <div class="muted">VS: ${escapeHtml(user.variableSymbol || "—")}</div>
             </div>
-            <span class="status-badge blocked">vymazan?</span>
+            <span class="status-badge blocked">vymazaná</span>
+          </div>
+          <div class="license-validity-editor">
+            <label>
+              <span>Obnoviť na obdobie</span>
+              <select data-restore-duration-months="${user.id}">
+                <option value="">Vyber platnosť</option>
+                <option value="1">1 mesiac</option>
+                <option value="12">1 rok</option>
+                <option value="24">2 roky</option>
+              </select>
+            </label>
+            <div class="license-validity-separator">alebo</div>
+            <label>
+              <span>Ručne nastaviť presný dátum a čas</span>
+              <input type="datetime-local" step="60" data-restore-valid-until="${user.id}">
+            </label>
           </div>
           <div class="item-actions">
-            <button class="btn-small btn-activate" data-restore-license="${user.id}">Obnovit / aktivovat</button>
+            <button class="btn-small btn-activate" data-restore-license="${user.id}">Obnoviť a aktivovať</button>
+            <button class="btn-small btn-delete" data-permanent-delete="${user.id}">Úplne zmazať účet</button>
           </div>
         `;
         deletedList.appendChild(item);
@@ -871,10 +1011,35 @@ async function bindAdmin() {
 
       deletedList.querySelectorAll("[data-restore-license]").forEach((btn) => btn.addEventListener("click", async () => {
         try {
-          forgetDeletedLicense(btn.dataset.restoreLicense);
-          await api(`/api/admin/users/${btn.dataset.restoreLicense}/activate`, { method: "POST" });
+          const id = btn.dataset.restoreLicense;
+          const durationMonths = Number(deletedList.querySelector(`[data-restore-duration-months="${id}"]`)?.value || 0);
+          const validUntil = manualLicenseEnd(deletedList.querySelector(`[data-restore-valid-until="${id}"]`)?.value);
+          if (!validUntil && ![1, 12, 24].includes(durationMonths)) {
+            throw new Error("Vyber obdobie alebo zadaj presný dátum a čas.");
+          }
+          await api(`/api/admin/users/${id}/license`, {
+            method: "PUT",
+            body: JSON.stringify({
+              status: "active",
+              productCode: currentAdminProductCode(),
+              ...(validUntil ? { validUntil } : { durationMonths })
+            })
+          });
           await loadAdminUsers();
-          setStatus(qs("adminStatus"), "Licencia bola obnoven? a aktivovan?.", "ok");
+          setStatus(qs("adminStatus"), "Licencia bola obnovená a aktivovaná.", "ok");
+        } catch (err) {
+          setStatus(qs("adminStatus"), err.message, "err");
+        }
+      }));
+
+      deletedList.querySelectorAll("[data-permanent-delete]").forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          const user = state.adminUsers.find((x) => String(x.id) === String(btn.dataset.permanentDelete));
+          const label = user?.email ? ` ${user.email}` : "";
+          if (!confirm(`Naozaj úplne zmazať účet${label}? Zmažú sa všetky jeho licencie a údaje. Túto operáciu nemožno vrátiť späť.`)) return;
+          await api(`/api/admin/users/${btn.dataset.permanentDelete}/permanent`, { method: "DELETE" });
+          await loadAdminUsers();
+          setStatus(qs("adminStatus"), "Používateľ a všetky jeho licencie boli úplne zmazané.", "ok");
         } catch (err) {
           setStatus(qs("adminStatus"), err.message, "err");
         }
@@ -883,7 +1048,10 @@ async function bindAdmin() {
 
     list.querySelectorAll("[data-paid]").forEach((btn) => btn.addEventListener("click", async () => {
       try {
-        await api(`/api/admin/users/${btn.dataset.paid}/mark-paid`, { method: "POST" });
+        await api(`/api/admin/users/${btn.dataset.paid}/mark-paid`, {
+          method: "POST",
+          body: JSON.stringify({ productCode: currentAdminProductCode() })
+        });
         await loadAdminUsers();
         setStatus(qs("adminStatus"), "Platba bola označená ako uhradená.", "ok");
       } catch (err) {
@@ -909,21 +1077,20 @@ async function bindAdmin() {
   };
 
   async function loadAdminUsers() {
-    const data = await api("/api/admin/users", { method: "GET" });
-    const deletedIds = loadDeletedLicenseIds();
-    state.adminUsers = (data.users || []).map((u) => ({
-      id: u.id,
-      email: u.email,
-      role: u.role,
-      status: u.status,
-      licenseStatus: u.license_status || "pending",
-      licenseType: u.license_type || "one_time",
-      activatedAt: u.activated_at || "",
-      createdAt: u.created_at || "",
-      variableSymbol: u.variable_symbol || "",
-      paymentStatus: u.payment_status || "waiting_payment",
-      licenseDeleted: deletedIds.has(String(u.id)) || u.license_status === "deleted" || u.payment_status === "deleted" || !!u.license_deleted || !!u.license_deleted_at
-    }));
+    const data = await api(`/api/admin/users?product=${encodeURIComponent(currentAdminProductCode())}`, { method: "GET" });
+    state.adminUsers = (data.users || []).map((u) => {
+      const license = normalizeLicense(u.license || u);
+      return {
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        createdAt: u.created_at || u.createdAt || "",
+        variableSymbol: u.variable_symbol || u.variableSymbol || license.variableSymbol || "",
+        license,
+        licenseDeleted: license.status === "deleted" || !!u.license_deleted || !!u.license_deleted_at
+      };
+    });
     render();
   }
 
@@ -933,10 +1100,23 @@ async function bindAdmin() {
     }).catch((err) => setStatus(qs("adminStatus"), err.message, "err"));
   });
 
+  qs("adminProductCode")?.addEventListener("change", () => {
+    state.adminUsers = [];
+    loadAdminUsers().catch((err) => setStatus(qs("adminStatus"), err.message, "err"));
+  });
+
   ["adminFilterEmail", "adminFilterVs", "adminFilterStatus"].forEach((id) => {
     qs(id)?.addEventListener("input", render);
     qs(id)?.addEventListener("change", render);
   });
+
+  const statusFilter = qs("adminFilterStatus");
+  if (statusFilter && !statusFilter.querySelector('option[value="expired"]')) {
+    const option = document.createElement("option");
+    option.value = "expired";
+    option.textContent = "vypršané";
+    statusFilter.appendChild(option);
+  }
 
   const billingForm = qs("billingCompanyForm");
   if (billingForm) {
@@ -993,13 +1173,6 @@ function initTheme() {
     btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
   });
 }
-
-// Service worker dočasne vypnutý kvôli cache starého app.js
-// if ("serviceWorker" in navigator) {
-//   window.addEventListener("load", () => {
-//     navigator.serviceWorker.register("service-worker.js").catch((err) => console.log("SW ERROR", err));
-//   });
-// }
 
 document.addEventListener("DOMContentLoaded", async () => {
   activateTabs();

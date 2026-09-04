@@ -1,5 +1,4 @@
 const API_BASE = "https://qr-kody-platinum-api.virivkyonlinecz.workers.dev";
-const QR_API_BASE = "https://qr-generator-real.virivkyonlinecz.workers.dev";
 const PRODUCT_CODE = "qr-platinum";
 
 const state = {
@@ -168,39 +167,6 @@ async function api(path, options = {}) {
   return data;
 }
 
-
-async function qrApi(path, payload) {
-  const token = localStorage.getItem("token");
-  if (!token) throw new Error("Pre generovanie QR sa musíš prihlásiť.");
-
-  let res;
-  try {
-    res = await fetch(QR_API_BASE + path, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify({ ...(payload || {}), productCode: PRODUCT_CODE })
-    });
-  } catch {
-    throw new Error("Nepodarilo sa spojiť s QR serverom.");
-  }
-
-  const contentType = res.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
-    ? await res.json().catch(() => ({}))
-    : await res.text().catch(() => "");
-
-  if (!res.ok) {
-    const message = typeof data === "string"
-      ? data
-      : data?.error || data?.message || data?.detail || "QR API chyba";
-    throw new Error(message);
-  }
-
-  return data;
-}
 
 function setCurrentUserFromApi(data) {
   const user = data?.user || {};
@@ -629,17 +595,19 @@ if (due && !due.value) {
     if (!amount) return setStatus(qs("generatorStatus"), "Zadaj sumu.", "err");
 
     try {
-      const data = await qrApi("/", {
-  amount: Number(amount),
-  iban: company.iban,
-  beneficiaryName: company.beneficiaryName || company.companyName || "",
-  variableSymbol: qs("genVs")?.value.trim() || "",
-  specificSymbol: qs("genSs")?.value.trim() || "",
-  constantSymbol: qs("genKs")?.value.trim() || "",
-  dueDate: qs("genDueDate")?.value || "",
-  paymentNote: qs("genNote")?.value.trim() || "",
-  bic: company.bic || ""
-});
+      const data = await api("/api/qr/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          companyId: company.id,
+          amount: Number(amount),
+          currencyCode: "EUR",
+          variableSymbol: qs("genVs")?.value.trim() || "",
+          specificSymbol: qs("genSs")?.value.trim() || "",
+          constantSymbol: qs("genKs")?.value.trim() || "",
+          dueDate: qs("genDueDate")?.value || "",
+          paymentNote: qs("genNote")?.value.trim() || ""
+        })
+      });
 
       const img = qs("qrPreviewImage");
       if (img && data?.svg) {
